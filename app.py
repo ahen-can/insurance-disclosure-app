@@ -3,6 +3,7 @@ from extractor import extract_from_pdf
 from excel_writer import update_excel
 import auth
 
+import shutil
 import tempfile
 import os
 
@@ -19,21 +20,28 @@ ui.query("body").style(
 uploaded_pdfs = []
 uploaded_excel_data = None
 
+# Uploads are written to disk rather than held as bytes. A 25 MB disclosure kept
+# in memory for the whole session, on top of the copies the API call makes, is
+# what pushed the 512 MB instance over its limit.
+upload_dir = tempfile.mkdtemp(prefix="idr-uploads-")
+
 async def upload_pdfs(e):
     global uploaded_pdfs
-    content_bytes = await e.file.read()
+    path = os.path.join(upload_dir, e.file.name)
+    await e.file.save(path)
     uploaded_pdfs.append({
         "name": e.file.name,
-        "content": content_bytes
+        "path": path
     })
     ui.notify(f"PDF added: {e.file.name}", color="positive")
 
 async def upload_excel(e):
     global uploaded_excel_data
-    content_bytes = await e.file.read()
+    path = os.path.join(upload_dir, e.file.name)
+    await e.file.save(path)
     uploaded_excel_data = {
         "name": e.file.name,
-        "content": content_bytes
+        "path": path
     }
     ui.notify(f"Excel template added: {e.file.name}", color="positive")
 
@@ -67,11 +75,7 @@ async def run_extraction():
         uploaded_excel_data["name"]
     )
 
-    def save_template():
-        with open(excel_path, "wb") as f:
-            f.write(uploaded_excel_data["content"])
-
-    await run.io_bound(save_template)
+    await run.io_bound(shutil.copyfile, uploaded_excel_data["path"], excel_path)
 
     results = {}
     total = len(uploaded_pdfs)
@@ -81,7 +85,7 @@ async def run_extraction():
         status.text = f"Processing {pdf['name']}..."
 
         try:
-            data = await run.io_bound(extract_from_pdf, pdf["content"])
+            data = await run.io_bound(extract_from_pdf, pdf["path"])
             insurer = data.get(
                 "company_name",
                 pdf["name"].replace(".pdf", "")
@@ -147,6 +151,11 @@ async def run_extraction():
 
     status.text = "Completed"
 
+    for pdf in uploaded_pdfs:
+        try:
+            os.remove(pdf["path"])
+        except OSError:
+            pass
     uploaded_pdfs.clear()
     uploaded_excel_data = None
     progress.visible = False

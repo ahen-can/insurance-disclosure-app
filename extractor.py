@@ -7,7 +7,7 @@ import time
 from dotenv import load_dotenv
 from prompt import build_prompt
 from google import genai
-from google.genai import errors, types
+from google.genai import errors
 
 load_dotenv()
 
@@ -55,21 +55,43 @@ def _generate(contents):
 #genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 #model = genai.GenerativeModel("gemini-2.5-flash")
 
-def extract_from_pdf(pdf_bytes: bytes) -> dict:
+def _wait_active(uploaded, timeout=120):
+    """Wait for an uploaded file to finish processing before it is referenced."""
+    deadline = time.time() + timeout
+    while uploaded.state and uploaded.state.name == "PROCESSING":
+        if time.time() > deadline:
+            raise RuntimeError(f"Gemini did not finish processing {uploaded.name} in time")
+        time.sleep(1)
+        uploaded = client.files.get(name=uploaded.name)
+    if uploaded.state and uploaded.state.name == "FAILED":
+        raise RuntimeError(f"Gemini could not process the uploaded PDF ({uploaded.name})")
+    return uploaded
+
+
+def extract_from_pdf(pdf_path) -> dict:
+    """Extract one disclosure PDF, given a path on disk.
+
+    The PDF is uploaded to Gemini's Files API and referenced by name rather than
+    inlined in the request. Inlining base64-encodes the whole file into every
+    request — about 100 MB of copies for a 25 MB disclosure, repeated on each
+    retry — which is what exhausted the 512 MB instance.
+    """
     prompt = build_prompt()
-    
-    # response = model.generate_content([
-    #     {"mime_type": "application/pdf", "data": pdf_bytes},
-    #     prompt
-    # ])
-    
-    response = _generate([
-        types.Part.from_bytes(
-            data=pdf_bytes,
-            mime_type="application/pdf",
-        ),
-        prompt,
-    ])
+
+    uploaded = client.files.upload(
+        file=str(pdf_path),
+        config={"mime_type": "application/pdf"},
+    )
+    try:
+        uploaded = _wait_active(uploaded)
+        response = _generate([uploaded, prompt])
+    finally:
+        # Uploaded files expire on their own after 48h; removing them keeps the
+        # account's file list clean when many PDFs are processed in a batch.
+        try:
+            client.files.delete(name=uploaded.name)
+        except Exception:
+            pass
     
     raw = response.text.strip()
     
