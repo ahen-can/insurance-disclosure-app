@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: insurance-disclosure-app
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # NiceGUI runs its own uvicorn; app.py reads $PORT and binds 0.0.0.0.
+    startCommand: python app.py
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false          # set in the Render dashboard, never in this file
+      - key: APP_PASSWORD
+        sync: false
+      - key: STORAGE_SECRET
+        generateValue: true  # Render generates and stores a random secret
+      - key: PYTHON_VERSION
+        value: "3.13"

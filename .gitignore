@@ -1,0 +1,8 @@
+# Secrets — the original repo never ignored this, and its key ended up in
+# public git history. Keep it first in the list.
+.env
+
+__pycache__/
+*.pyc
+venv/
+.venv/

@@ -1,0 +1,6 @@
+# Pinned to the versions this deployment was tested against, so a Render
+# rebuild months from now installs the same stack.
+nicegui==3.16.0
+google-genai==2.19.0
+openpyxl==3.1.5
+python-dotenv==1.2.3
