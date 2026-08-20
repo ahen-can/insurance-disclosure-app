@@ -1,214 +1,197 @@
-from nicegui import ui, run
-from extractor import extract_from_pdf
-from excel_writer import update_excel
-import auth
-
+import os
 import shutil
 import tempfile
-import os
+from pathlib import Path
 
-ui.colors(
-    primary="#D97B36",
-    secondary="#F9E9E2",
-    accent="#BF6525"
-)
+from nicegui import app, run, ui
 
-ui.query("body").style(
-    "background:linear-gradient(135deg,#F9E9E2,#F8D9C8);"
-)
+import auth
+import results_view
+import theme
+from excel_writer import update_excel
+from extractor import extract_from_pdf
 
-uploaded_pdfs = []
-uploaded_excel_data = None
+# Output templates shipped with the app, newest first. Add a v2 here once the
+# L-25 sheets and the other known gaps are filled in.
+TEMPLATE_DIR = Path(__file__).parent / "templates"
+BUILT_IN_TEMPLATES = {
+    "Template v1 (built in)": TEMPLATE_DIR / "template_v1.xlsx",
+}
+UPLOAD_OWN = "Upload my own..."
 
-# Uploads are written to disk rather than held as bytes. A 25 MB disclosure kept
-# in memory for the whole session, on top of the copies the API call makes, is
-# what pushed the 512 MB instance over its limit.
-upload_dir = tempfile.mkdtemp(prefix="idr-uploads-")
+INSTRUCTIONS = [
+    "Upload one or more Public Disclosure PDFs. One financial year at a time.",
+    "Pick the output template. Template v1 has sheets L2 to L45.",
+    "Run the extraction. Each PDF takes roughly 20-30 seconds.",
+    "Copy a row straight into your own workbook, or download the whole file.",
+]
 
-async def upload_pdfs(e):
-    global uploaded_pdfs
-    path = os.path.join(upload_dir, e.file.name)
-    await e.file.save(path)
-    uploaded_pdfs.append({
-        "name": e.file.name,
-        "path": path
-    })
-    ui.notify(f"PDF added: {e.file.name}", color="positive")
 
-async def upload_excel(e):
-    global uploaded_excel_data
-    path = os.path.join(upload_dir, e.file.name)
-    await e.file.save(path)
-    uploaded_excel_data = {
-        "name": e.file.name,
-        "path": path
+@ui.page("/")
+def main_page():
+    theme.apply()
+
+    # Per-browser-session state. Holding this in the page function rather than in
+    # module globals is what lets two people use the app at once without mixing
+    # each other's uploads.
+    workspace = Path(tempfile.mkdtemp(prefix="idr-"))
+    state = {
+        "pdfs": [],
+        "template": BUILT_IN_TEMPLATES["Template v1 (built in)"],
+        "template_label": "Template v1 (built in)",
     }
-    ui.notify(f"Excel template added: {e.file.name}", color="positive")
 
-progress = ui.linear_progress(value=0, show_value=False).classes("w-full")
-progress.visible = False
+    async def on_pdf_upload(event):
+        path = workspace / event.file.name
+        await event.file.save(path)
+        state["pdfs"].append({"name": event.file.name, "path": path})
+        refresh_queue()
+        ui.notify(f"Added {event.file.name}", color="positive")
 
-status = ui.label().style(
-    "font-size:16px;color:#5A3A1A;"
-)
+    async def on_template_upload(event):
+        path = workspace / f"template-{event.file.name}"
+        await event.file.save(path)
+        state["template"] = path
+        state["template_label"] = event.file.name
+        ui.notify(f"Using {event.file.name}", color="positive")
 
-download_container = ui.column()
+    def on_template_change(event):
+        if event.value == UPLOAD_OWN:
+            template_upload.set_visibility(True)
+            state["template"] = None
+            state["template_label"] = None
+        else:
+            template_upload.set_visibility(False)
+            state["template"] = BUILT_IN_TEMPLATES[event.value]
+            state["template_label"] = event.value
 
-async def run_extraction():
-    global uploaded_excel_data
+    def refresh_queue():
+        queue.clear()
+        with queue:
+            if not state["pdfs"]:
+                ui.label("No PDFs added yet").classes("muted")
+                return
+            for item in state["pdfs"]:
+                with ui.row().classes("items-center justify-between w-full no-wrap"):
+                    ui.label(item["name"]).classes("step ellipsis").style("min-width:0")
+                    ui.button(icon="close", on_click=lambda i=item: remove_pdf(i)) \
+                        .props("flat dense round size=sm color=grey")
 
-    if len(uploaded_pdfs) == 0:
-        ui.notify("Please upload PDFs", color="negative")
-        return
+    def remove_pdf(item):
+        state["pdfs"] = [p for p in state["pdfs"] if p is not item]
+        item["path"].unlink(missing_ok=True)
+        refresh_queue()
 
-    if uploaded_excel_data is None:
-        ui.notify("Please upload the Excel template", color="negative")
-        return
+    # ---------------------------------------------------------------- extraction
+    async def run_extraction():
+        if not state["pdfs"]:
+            ui.notify("Add at least one PDF first", color="negative")
+            return
+        if not state["template"]:
+            ui.notify("Choose or upload an output template", color="negative")
+            return
 
-    progress.visible = True
-    progress.value = 0
+        run_button.disable()
+        progress.visible = True
+        progress.value = 0
+        output.clear()
+        with output:
+            with ui.column().classes("items-center w-full gap-2") \
+                    .style("margin-top:16vh"):
+                ui.spinner(size="42px", color="primary")
+                ui.label("Extracting...").classes("muted")
 
-    tmpdir = tempfile.mkdtemp()
+        excel_path = workspace / f"output-{Path(state['template']).name}"
+        await run.io_bound(shutil.copyfile, state["template"], excel_path)
 
-    excel_path = os.path.join(
-        tmpdir,
-        uploaded_excel_data["name"]
-    )
+        results = {}
+        total = len(state["pdfs"])
+        for index, pdf in enumerate(state["pdfs"]):
+            status.text = f"Extracting {pdf['name']}"
+            try:
+                data = await run.io_bound(extract_from_pdf, str(pdf["path"]))
+                insurer = data.get("company_name", pdf["name"].removesuffix(".pdf"))
+                results[insurer] = {"status": "success", "data": data}
+            except Exception as exc:
+                results[pdf["name"]] = {"status": "error", "error": str(exc)}
+            progress.value = (index + 1) / total
 
-    await run.io_bound(shutil.copyfile, uploaded_excel_data["path"], excel_path)
+        status.text = "Writing workbook"
+        progress.props("indeterminate")
+        await run.io_bound(update_excel, results, str(excel_path))
+        progress.props(remove="indeterminate")
+        progress.value = 1.0
+        progress.visible = False
+        status.text = ""
 
-    results = {}
-    total = len(uploaded_pdfs)
+        output.clear()
+        with output:
+            results_view.render(excel_path, results)
+        for pdf in state["pdfs"]:
+            pdf["path"].unlink(missing_ok=True)
+        state["pdfs"] = []
+        refresh_queue()
+        run_button.enable()
 
-    for i, pdf in enumerate(uploaded_pdfs):
-        percentage = round(((i + 1) / total) * 100)
-        status.text = f"Processing {pdf['name']}..."
-
-        try:
-            data = await run.io_bound(extract_from_pdf, pdf["path"])
-            insurer = data.get(
-                "company_name",
-                pdf["name"].replace(".pdf", "")
-            )
-
-            results[insurer] = {
-                "status": "success",
-                "data": data
-            }
-
-            ui.notify(
-                f"Extracted {insurer}",
-                color="positive"
-            )
-
-        except Exception as e:
-            results[pdf["name"]] = {
-                "status": "error",
-                "error": str(e)
-            }
-
-        progress.value = (i + 1) / total
-
-    status.text = "Writing to Excel template..."
-    progress.value = 0
-    progress.props('indeterminate')
-
-    await run.io_bound(update_excel, results, excel_path)
-
-    progress.props(remove='indeterminate')
-    progress.value = 1.0
-    status.text = "Excel compiled successfully !!"
-
-    # Capture the name before uploaded_excel_data is reset at the end of this
-    # function, since the button's callback runs long after that.
-    download_name = uploaded_excel_data["name"]
-
-    download_container.clear()
-
-    with download_container:
-        # A visible button rather than an automatic download: browsers routinely
-        # block a download a page starts by itself, which left the finished
-        # workbook unreachable with no error shown.
-        ui.button(
-            f"Download {download_name}",
-            icon="download",
-            on_click=lambda: ui.download.file(excel_path, download_name),
-        ).props("color=primary size=lg")
-
-        ui.notify(
-            "Done!",
-            color="positive"
-        )
-
+    # --------------------------------------------------------------------- layout
+    with ui.left_drawer(fixed=True, bordered=True).props("width=340") \
+            .classes("p-4 gap-3").style(f"background:{theme.PAPER}"):
+        ui.label("Insurance Data").classes("brand-title text-xl")
+        ui.label("Public disclosure extractor").classes("muted")
         ui.separator()
 
-        for insurer, result in results.items():
-            if result["status"] == "success":
-                with ui.expansion(insurer).classes('w-full'):
-                    ui.json_editor({"content": {"json": result["data"]}})
-            else:
-                ui.label(f"{insurer}: {result['error']}").style("color:red;")
+        for number, text in enumerate(INSTRUCTIONS, 1):
+            with ui.row().classes("items-start gap-2 no-wrap"):
+                ui.label(str(number)).classes("step-num")
+                ui.label(text).classes("step").style("min-width:0")
 
-    status.text = "Completed"
+        ui.separator()
+        ui.label("DISCLOSURE PDFs").classes("muted")
+        # Quasar colours the uploader header with `color`; left as primary it is a
+        # slab of orange with a byte counter, which fights the rest of the panel.
+        ui.upload(multiple=True, auto_upload=True, on_upload=on_pdf_upload) \
+            .props('flat bordered color=grey-2 text-color=grey-8 accept=".pdf" '
+                   'label="Drop or choose PDFs"') \
+            .classes("w-full").style("min-height:92px")
+        queue = ui.column().classes("w-full gap-1")
 
-    for pdf in uploaded_pdfs:
-        try:
-            os.remove(pdf["path"])
-        except OSError:
-            pass
-    uploaded_pdfs.clear()
-    uploaded_excel_data = None
-    progress.visible = False
+        ui.label("OUTPUT TEMPLATE").classes("muted")
+        ui.select(list(BUILT_IN_TEMPLATES) + [UPLOAD_OWN],
+                  value="Template v1 (built in)", on_change=on_template_change) \
+            .props("outlined dense").classes("w-full")
+        template_upload = ui.upload(multiple=False, auto_upload=True,
+                                    on_upload=on_template_upload) \
+            .props('flat bordered color=grey-2 text-color=grey-8 accept=".xlsx" '
+                   'label="Choose .xlsx"') \
+            .classes("w-full").style("min-height:92px")
+        template_upload.set_visibility(False)
 
-with ui.column().classes("w-full items-center"):
+        run_button = ui.button("Run extraction", icon="play_arrow",
+                               on_click=run_extraction) \
+            .props("unelevated color=primary").classes("w-full mt-1")
+        progress = ui.linear_progress(value=0, show_value=False).classes("w-full")
+        progress.visible = False
+        status = ui.label().classes("muted")
 
-    ui.label(
-        "Insurance Data Repository Creator"
-    ).style("""
-        font-size:40px;
-        font-family:Georgia;
-        font-weight:bold;
-        color:#B35A1F;
-    """)
+        ui.space()
+        ui.button("Sign out", icon="logout", on_click=auth.sign_out) \
+            .props("flat dense color=grey").classes("w-full")
 
-    with ui.card().classes("w-3/4"):
-        ui.markdown("""
-### Instructions
+    with ui.column().classes("w-full p-6 gap-3").style("max-width:1400px"):
+        output = ui.column().classes("w-full gap-3")
+        with output:
+            empty_state()
 
-1. Upload ONLY Public Disclosure PDFs in the required order.
+    refresh_queue()
 
-2. Upload one Financial Year at a time.
 
-3. Upload the Excel template containing sheets L2,3,4,5,6,7,9,22,37,38,39,41,45.
+def empty_state():
+    with ui.column().classes("items-center w-full gap-2").style("margin-top:16vh"):
+        ui.icon("description", size="56px").style(f"color:{theme.GREY}")
+        ui.label("Results appear here").classes("brand-title text-xl")
+        ui.label("Add a disclosure PDF on the left, then run the extraction.") \
+            .classes("muted")
 
-4. Only one user can use the tool at any given time.
-                    
-5. Keep in mind AI token usage.
-""").style("""
-        font-size:15px;
-        font-family:Arial;
-        font-weight:bold;
-        color:#B35A1F;
-    """)
-
-    ui.upload(
-        label="Upload Public Disclosure PDFs",
-        multiple=True,
-        auto_upload=True,
-        on_upload=upload_pdfs
-    ).classes("w-3/4")
-
-    ui.upload(
-        label="Upload Excel Template",
-        multiple=False,
-        auto_upload=True,
-        on_upload=upload_excel
-    ).classes("w-3/4")
-
-    ui.button(
-        "Extract & Generate Excel",
-        on_click=run_extraction
-    ).props("color=primary")
 
 auth.install()
 

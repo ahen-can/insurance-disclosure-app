@@ -7,13 +7,26 @@ needed to run it as a shared hosted service:
 
 | Added | Why |
 |---|---|
-| `auth.py` | Shared-password gate, and `$PORT` / `0.0.0.0` binding for Render |
+| `auth.py` | Password-gated login page, and `$PORT` / `0.0.0.0` binding for Render |
+| `theme.py` | Shared palette and styles |
+| `results_view.py`, `sheets.py` | On-screen results with copy-to-clipboard |
+| `templates/` | Built-in output templates, so none has to be uploaded |
 | `render.yaml`, `.python-version` | Render build and runtime configuration |
 | `.gitignore` with `.env` | The original never ignored `.env`; see the warning below |
 | pinned `requirements.txt` | So a rebuild installs the same stack it was tested on |
 
-`app.py` differs from the original by three lines: an `import auth`, an `auth.install()`,
-and `**auth.run_kwargs()` passed to `ui.run`.
+`app.py` has been reworked into a `@ui.page` layout: a fixed left panel for
+instructions, uploads and template choice, and a results pane on the right. The
+extraction itself (`extractor.py`, `prompt.py`, `config.py`, `excel_writer.py`) is
+untouched apart from how the PDF reaches Gemini.
+
+## Getting data out without downloading
+
+Each sheet in the result is shown as a card with a **Copy** button that puts the data
+row on the clipboard as tab-separated values, in template column order. Click a cell in
+your own workbook and paste: it fills across the columns under your existing headers.
+Useful where downloading a spreadsheet triggers device policy. The full workbook is
+still downloadable from the button at the top of the results.
 
 > **Security note.** In the upstream repo `.gitignore` never listed `.env`, and the file
 > was committed in the first commit and deleted later (commit "Deleted .env"). Deleting a
@@ -36,11 +49,16 @@ and `**auth.run_kwargs()` passed to `ui.run`.
 If `APP_PASSWORD` is unset the gate is disabled and the app is open to anyone with the
 URL — fine locally, not fine on Render.
 
-## Known limitation, not yet fixed
+## Notes
 
-Uploads are held in module-level globals, so **two people using the hosted app at the
-same time will mix each other's files**. This deployment ships the tool as-is; isolating
-state per browser session is the next change.
+- Upload state is per browser session, so two people can use the app at once.
+- PDFs are streamed to disk and uploaded to Gemini's Files API rather than held in
+  memory; inlining a 25 MB disclosure exhausted the 512 MB Render instance.
+- Transient Gemini failures (503 and friends) are retried with backoff and then
+  attempted against a fallback model. Set `GEMINI_MODEL`, `GEMINI_FALLBACK_MODELS` or
+  `GEMINI_MAX_ATTEMPTS` to change that.
+- The built-in template has no L-25 sheets: the upstream prompt drops L-25, so those
+  sheets stay empty.
 
 ---
 

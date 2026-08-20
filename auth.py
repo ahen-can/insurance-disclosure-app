@@ -1,62 +1,80 @@
 """Shared-password gate and Render-compatible server settings.
 
-Kept apart from app.py so the original tool's code stays as Asavari wrote it.
-The app sits at a public URL and spends our own Gemini quota on every run, so it
-must not be reachable without the password.
-
-HTTP Basic Auth rather than a NiceGUI login page: NiceGUI 3.x refuses to mix
-`@ui.page` with UI defined at global scope, and app.py defines its UI globally.
-A login page would mean restructuring the tool before we have ever seen it run.
-Basic auth needs no page at all, so app.py keeps her code intact.
+Kept apart from app.py so the extraction code stays as Asavari wrote it.
+The app sits at a public URL and spends our own Gemini quota on every run, so
+it must not be reachable without the password.
 """
 
-import base64
 import os
 import secrets
 
-from nicegui import app
+from fastapi import Request
+from fastapi.responses import RedirectResponse
+from nicegui import app, ui
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
+
+import theme
 
 APP_PASSWORD = os.environ.get("APP_PASSWORD", "")
-REALM = 'Basic realm="Insurance Data Repository Creator", charset="UTF-8"'
+
+# NiceGUI's own endpoints serve the page's JS, the websocket handshake and the
+# upload POSTs; redirecting those would break the page for a signed-in user too.
+UNRESTRICTED_PREFIXES = ("/login", "/_nicegui", "/favicon", "/socket.io")
 
 
-def _password_matches(header: str) -> bool:
-    if not header.lower().startswith("basic "):
-        return False
-    try:
-        decoded = base64.b64decode(header[6:]).decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        return False
-    _username, separator, password = decoded.partition(":")
-    if not separator:
-        return False
-    # Any username is accepted; only the shared password is checked.
-    return secrets.compare_digest(password, APP_PASSWORD)
-
-
-class BasicAuthMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        if _password_matches(request.headers.get("authorization", "")):
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if path.startswith(UNRESTRICTED_PREFIXES) or is_signed_in():
             return await call_next(request)
-        return Response(status_code=401, headers={"WWW-Authenticate": REALM})
+        return RedirectResponse("/login")
+
+
+def is_signed_in() -> bool:
+    try:
+        return bool(app.storage.user.get("authenticated", False))
+    except RuntimeError:      # no request context, e.g. during startup
+        return False
+
+
+def sign_out() -> None:
+    app.storage.user["authenticated"] = False
+    ui.navigate.to("/login")
+
+
+@ui.page("/login")
+def login_page():
+    theme.apply()
+
+    def attempt():
+        if APP_PASSWORD and secrets.compare_digest(password.value or "", APP_PASSWORD):
+            app.storage.user["authenticated"] = True
+            ui.navigate.to("/")
+        else:
+            password.value = ""
+            ui.notify("Incorrect password", color="negative")
+
+    with ui.column().classes("absolute-center items-center gap-4"):
+        ui.label("Insurance Data Repository").classes("brand-title text-3xl")
+        ui.label("Public disclosure extractor").classes("muted")
+        with ui.card().classes("panel p-6 items-stretch").style("width: 340px"):
+            password = ui.input("Password", password=True,
+                                password_toggle_button=True) \
+                .props("outlined dense").classes("w-full")
+            password.on("keydown.enter", attempt)
+            ui.button("Sign in", on_click=attempt) \
+                .props("unelevated color=primary").classes("w-full mt-2")
 
 
 _INSTALLED = False
 
 
 def install() -> bool:
-    """Enable the password gate. Returns False when no password is configured.
-
-    Idempotent on purpose: with the UI defined at global scope, NiceGUI re-runs
-    app.py on every page request to rebuild it, so this is called repeatedly, and
-    Starlette refuses to add middleware once the server is running.
-    """
+    """Enable the password gate. Returns False when no password is configured."""
     global _INSTALLED
     if _INSTALLED or not APP_PASSWORD:
         return False
-    app.add_middleware(BasicAuthMiddleware)
+    app.add_middleware(AuthMiddleware)
     _INSTALLED = True
     return True
 
@@ -72,5 +90,5 @@ def run_kwargs() -> dict:
         "host": "0.0.0.0",
         "port": int(os.environ.get("PORT", 8080)),
         "storage_secret": os.environ.get("STORAGE_SECRET", "local-dev-secret"),
-        "show": False,          # no browser to open on a server
+        "show": False,
     }
