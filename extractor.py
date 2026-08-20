@@ -2,10 +2,12 @@
 # import google.generativeai as genai
 import json
 import os
+import random
+import time
 from dotenv import load_dotenv
 from prompt import build_prompt
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 
 load_dotenv()
 
@@ -15,7 +17,40 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 # keys ("no longer available to new users"), so the model has to be named
 # explicitly and is worth keeping configurable — swapping it on Render is then
 # an env var change rather than a code change.
-MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+
+# Google returns 503 UNAVAILABLE when a model is busy, which happens to the
+# newest models in particular and has nothing to do with the request. Without a
+# retry the whole PDF is lost to a momentary spike, so transient failures are
+# retried with backoff and then tried against a second model.
+FALLBACK_MODELS = [m.strip() for m in
+                   os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash").split(",")
+                   if m.strip()]
+MAX_ATTEMPTS = int(os.getenv("GEMINI_MAX_ATTEMPTS", "4"))
+TRANSIENT_CODES = {429, 500, 502, 503, 504}
+
+
+def _generate(contents):
+    """Call Gemini, retrying transient failures and falling back to another model."""
+    models = [MODEL] + [m for m in FALLBACK_MODELS if m != MODEL]
+    last_error = None
+    for model in models:
+        for attempt in range(MAX_ATTEMPTS):
+            try:
+                return client.models.generate_content(model=model, contents=contents)
+            except errors.APIError as exc:
+                if getattr(exc, "code", None) not in TRANSIENT_CODES:
+                    raise
+                last_error = exc
+                if attempt < MAX_ATTEMPTS - 1:
+                    time.sleep(2 ** attempt + random.random())
+    tried = ", ".join(models)
+    raise RuntimeError(
+        f"Gemini was unavailable after retrying {tried}. This is a temporary "
+        f"capacity problem on Google's side, not a problem with the PDF or the "
+        f"API key — try again shortly, or set GEMINI_MODEL to another model. "
+        f"Last error: {last_error}"
+    ) from last_error
 
 #genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 #model = genai.GenerativeModel("gemini-2.5-flash")
@@ -28,16 +63,13 @@ def extract_from_pdf(pdf_bytes: bytes) -> dict:
     #     prompt
     # ])
     
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=[
-            types.Part.from_bytes(
-                data=pdf_bytes,
-                mime_type="application/pdf",
-            ),
-            prompt,
-        ],
-    )
+    response = _generate([
+        types.Part.from_bytes(
+            data=pdf_bytes,
+            mime_type="application/pdf",
+        ),
+        prompt,
+    ])
     
     raw = response.text.strip()
     
