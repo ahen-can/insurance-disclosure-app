@@ -11,6 +11,12 @@ load_dotenv()
 
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
+# gemini-2.5-flash, which this tool was written against, is closed to new API
+# keys ("no longer available to new users"), so the model has to be named
+# explicitly and is worth keeping configurable — swapping it on Render is then
+# an env var change rather than a code change.
+MODEL = os.getenv("GEMINI_MODEL", "gemini-3.7-flash")
+
 #genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 #model = genai.GenerativeModel("gemini-2.5-flash")
 
@@ -23,7 +29,7 @@ def extract_from_pdf(pdf_bytes: bytes) -> dict:
     # ])
     
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=MODEL,
         contents=[
             types.Part.from_bytes(
                 data=pdf_bytes,
