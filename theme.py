@@ -29,6 +29,8 @@ def apply():
                    align-items: center; justify-content: center;
                    font-size: 11px; font-weight: 700; flex: none; }}
       .muted {{ color: {GREY}; font-size: 12px; }}
+      .brand-sub {{ color: {ORANGE}; font-size: 13px; }}
+      .note {{ color: {ORANGE}; font-size: 15px; line-height: 1.5; }}
       .sheet-name {{ font-weight: 600; color: {INK}; font-size: 14px; }}
       .datagrid {{ border-collapse: collapse; font-size: 12px; width: max-content; }}
       .datagrid th {{ background: {ORANGE}10; color: {INK}; font-weight: 600;

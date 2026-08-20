@@ -56,7 +56,7 @@ def login_page():
 
     with ui.column().classes("absolute-center items-center gap-4"):
         ui.label("Insurance Data Repository").classes("brand-title text-3xl")
-        ui.label("Public disclosure extractor").classes("muted")
+        ui.label("Public disclosure extractor").classes("brand-sub")
         with ui.card().classes("panel p-6 items-stretch").style("width: 340px"):
             password = ui.input("Password", password=True,
                                 password_toggle_button=True) \

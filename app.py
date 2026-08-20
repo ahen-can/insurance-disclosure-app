@@ -134,10 +134,13 @@ def main_page():
         run_button.enable()
 
     # --------------------------------------------------------------------- layout
-    with ui.left_drawer(fixed=True, bordered=True).props("width=340") \
+    # value=True rather than the default None: None makes NiceGUI ask the
+    # browser whether the drawer should start open, and there is no toggle
+    # button in this layout, so an auto-hidden panel would be unreachable.
+    with ui.left_drawer(value=True, fixed=True, bordered=True).props("width=340") \
             .classes("p-4 gap-3").style(f"background:{theme.PAPER}"):
         ui.label("Insurance Data").classes("brand-title text-xl")
-        ui.label("Public disclosure extractor").classes("muted")
+        ui.label("Public disclosure extractor").classes("brand-sub")
         ui.separator()
 
         for number, text in enumerate(INSTRUCTIONS, 1):

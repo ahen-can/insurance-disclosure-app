@@ -24,7 +24,7 @@ def render(excel_path, results):
             .props("outline dense color=primary")
 
     if successes:
-        ui.label(f"Extracted: {', '.join(successes)}").classes("muted")
+        ui.label(f"Extracted: {', '.join(successes)}").classes("note")
 
     for name, failure in failures.items():
         with ui.card().classes("panel w-full p-3") \
@@ -36,7 +36,7 @@ def render(excel_path, results):
         return
 
     ui.label("Click Copy, then paste into your workbook. Values only, tab "
-             "separated, in template column order.").classes("muted")
+             "separated, in template column order.").classes("note")
 
     for sheet_name, headers, rows in sheets.read_workbook(excel_path):
         with ui.card().classes("panel w-full p-3 gap-2"):
@@ -50,8 +50,7 @@ def render(excel_path, results):
                     ui.button("Copy", icon="content_copy",
                               on_click=lambda r=row, s=sheet_name: _copy(r, s)) \
                         .props("flat dense color=primary")
-            with ui.expansion("Preview").classes("w-full").props("dense"):
-                ui.html(_table_html(headers, rows)).classes("scroll-x")
+            ui.html(_table_html(headers, rows)).classes("scroll-x w-full")
 
 
 def _copy(row, sheet_name):
