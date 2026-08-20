@@ -115,13 +115,21 @@ async def run_extraction():
     progress.value = 1.0
     status.text = "Excel compiled successfully !!"
 
+    # Capture the name before uploaded_excel_data is reset at the end of this
+    # function, since the button's callback runs long after that.
+    download_name = uploaded_excel_data["name"]
+
     download_container.clear()
 
     with download_container:
-        ui.download(
-            excel_path,
-            filename=uploaded_excel_data["name"]
-        )
+        # A visible button rather than an automatic download: browsers routinely
+        # block a download a page starts by itself, which left the finished
+        # workbook unreachable with no error shown.
+        ui.button(
+            f"Download {download_name}",
+            icon="download",
+            on_click=lambda: ui.download.file(excel_path, download_name),
+        ).props("color=primary size=lg")
 
         ui.notify(
             "Done!",
