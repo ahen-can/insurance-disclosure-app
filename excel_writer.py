@@ -1,7 +1,38 @@
-import openpyxl
-from openpyxl.utils import get_column_letter
-from config import SHEET_CONFIG
+"""Writing extracted data into an output workbook.
 
+Two template shapes are supported, because the two form families are kept in
+differently shaped sheets.
+
+  life     Sheets arrive blank. The writer builds everything: row 1 is the
+           financial year merged across a block of columns, row 2 the field
+           names, column A the insurer. A second year adds a block to the right.
+
+  general  Sheets arrive with a banner, real column headers and number formats
+           already in place, one financial year wide. The writer only fills
+           cells: columns are fixed, and each insurer takes the next free row.
+
+The general path is the simpler of the two precisely because the template does
+more of the work.
+"""
+
+import re
+
+import openpyxl
+
+import summary
+from config import SHEET_CONFIG
+from config_general import HEADER_ROWS, SHEET_CONFIG_GENERAL, SHEET_TITLES
+
+# Data key -> sheet name, for the life templates.
+LIFE_SHEETS = {
+    "L2": "L2", "L3": "L3", "L4": "L4", "L5": "L5", "L6": "L6", "L7": "L7",
+    "L9": "L9", "L22": "L22", "L37": "L37", "L38": "L38",
+    "L39_individual": "L39_Individual", "L39_group": "L39_Group",
+    "L41": "L41", "L45": "L45",
+}
+
+
+# ------------------------------------------------------------------ life path
 
 def get_or_add_fy_columns(ws, year: str, fields: list, data_start_col: int):
     """
@@ -64,174 +95,74 @@ def write_flat_sheet(wb, sheet_name: str, data: dict,
         ws.cell(row=company_row, column=col).value = data.get(field)
 
 
-def _get_or_add_company_block(ws, insurer_name: str, year: str, fields: list, data_start_col: int = 3):
+# --------------------------------------------------------------- general path
+
+def write_general_sheet(wb, sheet_title: str, data: dict, insurer_name: str,
+                        fields: list, header_rows: int):
+    """Fill one pre-headed NL sheet. Columns are fixed; the row is appended.
+
+    Nothing is written above the data: the banner and headers came with the
+    template and are better than anything generated here.
     """
-    Finds or creates an nested layout structure:
-    Row 1: Company Name (Merged across all its distinct years)
-    Row 2: Financial Year (Merged across its field metrics)
-    Row 3: Field Subheadings
+    if sheet_title not in wb.sheetnames:
+        return
+
+    ws = wb[sheet_title]
+    first_data_row = header_rows + 1
+    row = get_or_create_company_row(ws, insurer_name, data_start_row=first_data_row)
+
+    for offset, field in enumerate(fields):
+        cell = ws.cell(row=row, column=2 + offset)
+        cell.value = data.get(field)
+        if row > first_data_row:
+            # The template only carries formats on its first data row.
+            cell.number_format = ws.cell(row=first_data_row,
+                                         column=2 + offset).number_format
+
+
+def template_year(wb) -> str | None:
+    """The financial year the general template is laid out for, e.g. 'FY26'.
+
+    Taken from the banner in B1 ("FY26 | NL-1 | Revenue account") so that a
+    template rebuilt for a later year needs no code change.
     """
-    block_width = len(fields)
-    
-    company_start = None
-    company_end = None
-    
-    col = data_start_col
-    while col <= max(ws.max_column, data_start_col):
-        val = ws.cell(row=1, column=col).value
-        if val == insurer_name:
-            company_start = col
-            # Find where this company block ends by scanning merged or consecutive cells
-            next_col = col
-            while next_col <= max(ws.max_column, data_start_col):
-                next_val = ws.cell(row=1, column=next_col).value
-                # Stop if we hit a new company name
-                if next_val is not None and next_val != insurer_name:
-                    break
-                next_col += 1
-            company_end = next_col - 1
-            break
-        col += 1
-
-
-    if company_start is not None:
-        for col in range(company_start, company_end + 1):
-            if ws.cell(row=2, column=col).value == year:
-                return col  # Exact company + year combination found
-
-        insert_col = company_end + 1
-        
-        ws.insert_cols(insert_col, amount=block_width)
-        
-        for merged_range in list(ws.merged_cells.ranges):
-            if merged_range.min_row == 1 and merged_range.min_col == company_start:
-                ws.unmerge_cells(str(merged_range))
-                break
-                
-        ws.merge_cells(start_row=1, start_column=company_start, end_row=1, end_column=company_end + block_width)
-        for c in range(company_start, company_end + block_width + 1):
-            ws.cell(row=1, column=c).value = insurer_name
-            
-        ws.cell(row=2, column=insert_col).value = year
-        if block_width > 1:
-            ws.merge_cells(start_row=2, start_column=insert_col, end_row=2, end_column=insert_col + block_width - 1)
-            
-        for i, field in enumerate(fields):
-            ws.cell(row=3, column=insert_col + i).value = field
-            
-        return insert_col
-
-    start_col = data_start_col
-    while True:
-        if (ws.cell(row=1, column=start_col).value is None and 
-            ws.cell(row=2, column=start_col).value is None and 
-            ws.cell(row=3, column=start_col).value is None):
-            break
-        start_col += 1
-
-    end_col = start_col + block_width - 1
-    
-    ws.cell(row=1, column=start_col).value = insurer_name
-    ws.cell(row=2, column=start_col).value = year
-    
-    if end_col > start_col:
-        ws.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
-        ws.merge_cells(start_row=2, start_column=start_col, end_row=2, end_column=end_col)
-
-    for i, field in enumerate(fields):
-        ws.cell(row=3, column=start_col + i).value = field
-
-    return start_col
-
-def update_excel(results: dict, excel_path: str, wb=None):
-    if wb is None:
-        wb = openpyxl.load_workbook(excel_path)
-    
-    flat_sheets = {
-        "L2": "L2", "L3": "L3", "L4": "L4", "L5": "L5", "L6": "L6", "L7": "L7",
-        "L9": "L9", "L22": "L22", "L37": "L37", "L38": "L38",
-        "L39_individual": "L39_Individual", "L39_group": "L39_Group", "L41": "L41", "L45": "L45"
-    }
-
-    for insurer_name, result in results.items():
-        if result["status"] != "success":
+    for title in SHEET_TITLES.values():
+        if title not in wb.sheetnames:
             continue
-
-        data = result["data"]
-        year = data.get("year", "FY23")
-
-        for data_key, sheet_name in flat_sheets.items():
-            if data_key in data and data_key in SHEET_CONFIG:
-                write_flat_sheet(wb, sheet_name, data[data_key], insurer_name, year, SHEET_CONFIG[data_key])
-
-        if "L25_individual" in data:
-            write_l25_individual(wb, data["L25_individual"], insurer_name, year)
-
-        if "L25_group" in data:
-            write_l25_group(wb, data["L25_group"], insurer_name, year)
-
-    wb.save(excel_path)
+        banner = wb[title].cell(row=1, column=2).value
+        match = re.search(r"FY\d{2}", str(banner or ""))
+        if match:
+            return match.group(0)
+    return None
 
 
-def _ensure_state_rows(ws, sno_col=1, state_col=2, header_row=3):
-    """
-    Writes S.No in col A and State/UT (+ Total row) in col B,
-    starting from row 4. Only writes once (skips if already present).
-    """
-    if ws.cell(row=header_row, column=sno_col).value is None:
-        ws.cell(row=header_row, column=sno_col).value = "S.No"
-    if ws.cell(row=header_row, column=state_col).value is None:
-        ws.cell(row=header_row, column=state_col).value = "State / UT"
+# ------------------------------------------------------------------ entrypoint
 
-    start_row = header_row + 1
-
-    if ws.cell(row=start_row, column=state_col).value is not None:
-        return  # already populated
-
-    for idx, state in enumerate(STATE_ORDER, start=1):
-        row = start_row + idx - 1
-        ws.cell(row=row, column=sno_col).value = idx
-        ws.cell(row=row, column=state_col).value = state
-
-    total_row = start_row + len(STATE_ORDER)
-    ws.cell(row=total_row, column=sno_col).value = ""
-    ws.cell(row=total_row, column=state_col).value = "Total"
-
-def update_excel(results: dict, excel_path: str):
+def update_excel(results: dict, excel_path: str, kind: str = "life"):
+    """Write every successful extraction into the workbook, then summarise it."""
     wb = openpyxl.load_workbook(excel_path)
 
-    flat_sheets = {
-        "L2": "L2",
-        "L3": "L3",
-        "L4": "L4",
-        "L5": "L5",
-        "L6": "L6",
-        "L7": "L7",
-        "L9": "L9",
-        "L22": "L22",
-        "L37": "L37",
-        "L38": "L38",
-        "L39_individual": "L39_Individual",
-        "L39_group": "L39_Group",
-        "L41": "L41",
-        "L45": "L45"
-    }
+    expected_year = template_year(wb) if kind == "general" else None
 
     for insurer_name, result in results.items():
         if result["status"] != "success":
             continue
 
         data = result["data"]
-        year = data.get("year", "FY23")
 
-        for data_key, sheet_name in flat_sheets.items():
-            if data_key in data and data_key in SHEET_CONFIG:
-                write_flat_sheet(
-                    wb, sheet_name,
-                    data[data_key],
-                    insurer_name,
-                    year,
-                    SHEET_CONFIG[data_key]
-                )
+        if kind == "general":
+            for code, fields in SHEET_CONFIG_GENERAL.items():
+                values = data.get(code)
+                if isinstance(values, dict):
+                    title = SHEET_TITLES[code]
+                    write_general_sheet(wb, title, values, insurer_name, fields,
+                                        HEADER_ROWS.get(title, 2))
+        else:
+            year = data.get("year", "FY23")
+            for data_key, sheet_name in LIFE_SHEETS.items():
+                if data_key in data and data_key in SHEET_CONFIG:
+                    write_flat_sheet(wb, sheet_name, data[data_key],
+                                     insurer_name, year, SHEET_CONFIG[data_key])
 
+    summary.write_summary(wb, results, kind, expected_year)
     wb.save(excel_path)

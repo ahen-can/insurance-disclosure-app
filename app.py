@@ -7,23 +7,28 @@ from nicegui import app, run, ui
 
 import auth
 import results_view
+import sheets
 import theme
 from excel_writer import update_excel
 from extractor import extract_from_pdf
 
-# Output templates shipped with the app, newest first. Add a v2 here once the
-# L-25 sheets and the other known gaps are filled in.
+# Output templates shipped with the app, each paired with the form family it
+# holds. Add a life v2 here once the L-25 sheets and the other known gaps are
+# filled in.
 TEMPLATE_DIR = Path(__file__).parent / "templates"
+LIFE_TEMPLATE = "Life - Template v1 (built in)"
 BUILT_IN_TEMPLATES = {
-    "Template v1 (built in)": TEMPLATE_DIR / "template_v1.xlsx",
+    LIFE_TEMPLATE: (TEMPLATE_DIR / "template_v1.xlsx", "life"),
+    "General - Template v1 (built in)": (TEMPLATE_DIR / "template_general_v1.xlsx",
+                                         "general"),
 }
 UPLOAD_OWN = "Upload my own..."
 
 INSTRUCTIONS = [
     "Upload one or more Public Disclosure PDFs. One financial year at a time.",
-    "Pick the output template. Template v1 has sheets L2 to L45.",
+    "Pick the output template: life (L forms) or general (NL forms).",
     "Run the extraction. Each PDF takes roughly 20-30 seconds.",
-    "Copy a row straight into your own workbook, or download the whole file.",
+    "Check the summary first, then copy rows into your own workbook.",
 ]
 
 
@@ -37,8 +42,9 @@ def main_page():
     workspace = Path(tempfile.mkdtemp(prefix="idr-"))
     state = {
         "pdfs": [],
-        "template": BUILT_IN_TEMPLATES["Template v1 (built in)"],
-        "template_label": "Template v1 (built in)",
+        "template": BUILT_IN_TEMPLATES[LIFE_TEMPLATE][0],
+        "template_label": LIFE_TEMPLATE,
+        "kind": BUILT_IN_TEMPLATES[LIFE_TEMPLATE][1],
     }
 
     async def on_pdf_upload(event):
@@ -51,18 +57,29 @@ def main_page():
     async def on_template_upload(event):
         path = workspace / f"template-{event.file.name}"
         await event.file.save(path)
+        # Which form family an uploaded template is for is read off its sheet
+        # names rather than asked for: it is answerable from the file, and one
+        # more question in front of a run is one more thing to get wrong.
+        try:
+            kind = await run.io_bound(sheets.detect_kind, str(path))
+        except Exception as exc:
+            ui.notify(f"Could not read {event.file.name}: {exc}", color="negative")
+            return
         state["template"] = path
         state["template_label"] = event.file.name
-        ui.notify(f"Using {event.file.name}", color="positive")
+        state["kind"] = kind
+        family = "general (NL forms)" if kind == "general" else "life (L forms)"
+        ui.notify(f"Using {event.file.name} - read as {family}", color="positive")
 
     def on_template_change(event):
         if event.value == UPLOAD_OWN:
             template_upload.set_visibility(True)
             state["template"] = None
             state["template_label"] = None
+            state["kind"] = None
         else:
             template_upload.set_visibility(False)
-            state["template"] = BUILT_IN_TEMPLATES[event.value]
+            state["template"], state["kind"] = BUILT_IN_TEMPLATES[event.value]
             state["template_label"] = event.value
 
     def refresh_queue():
@@ -109,7 +126,8 @@ def main_page():
         for index, pdf in enumerate(state["pdfs"]):
             status.text = f"Extracting {pdf['name']}"
             try:
-                data = await run.io_bound(extract_from_pdf, str(pdf["path"]))
+                data = await run.io_bound(extract_from_pdf, str(pdf["path"]),
+                                          state["kind"])
                 insurer = data.get("company_name", pdf["name"].removesuffix(".pdf"))
                 results[insurer] = {"status": "success", "data": data}
             except Exception as exc:
@@ -118,7 +136,7 @@ def main_page():
 
         status.text = "Writing workbook"
         progress.props("indeterminate")
-        await run.io_bound(update_excel, results, str(excel_path))
+        await run.io_bound(update_excel, results, str(excel_path), state["kind"])
         progress.props(remove="indeterminate")
         progress.value = 1.0
         progress.visible = False
@@ -126,7 +144,7 @@ def main_page():
 
         output.clear()
         with output:
-            results_view.render(excel_path, results)
+            results_view.render(excel_path, results, state["kind"])
         for pdf in state["pdfs"]:
             pdf["path"].unlink(missing_ok=True)
         state["pdfs"] = []
@@ -160,7 +178,7 @@ def main_page():
 
         ui.label("OUTPUT TEMPLATE").classes("muted")
         ui.select(list(BUILT_IN_TEMPLATES) + [UPLOAD_OWN],
-                  value="Template v1 (built in)", on_change=on_template_change) \
+                  value=LIFE_TEMPLATE, on_change=on_template_change) \
             .props("outlined dense").classes("w-full")
         template_upload = ui.upload(multiple=False, auto_upload=True,
                                     on_upload=on_template_upload) \

@@ -5,7 +5,7 @@ import os
 import random
 import time
 from dotenv import load_dotenv
-from prompt import build_prompt
+from prompt import build_general_prompt, build_prompt
 from google import genai
 from google.genai import errors
 
@@ -68,15 +68,18 @@ def _wait_active(uploaded, timeout=120):
     return uploaded
 
 
-def extract_from_pdf(pdf_path) -> dict:
+def extract_from_pdf(pdf_path, kind: str = "life") -> dict:
     """Extract one disclosure PDF, given a path on disk.
+
+    `kind` picks the form family: "life" for the L forms, "general" for the NL
+    forms. Everything below is shared - only the prompt differs.
 
     The PDF is uploaded to Gemini's Files API and referenced by name rather than
     inlined in the request. Inlining base64-encodes the whole file into every
     request — about 100 MB of copies for a 25 MB disclosure, repeated on each
     retry — which is what exhausted the 512 MB instance.
     """
-    prompt = build_prompt()
+    prompt = build_general_prompt() if kind == "general" else build_prompt()
 
     uploaded = client.files.upload(
         file=str(pdf_path),
