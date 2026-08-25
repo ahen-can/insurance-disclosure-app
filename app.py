@@ -102,7 +102,13 @@ def main_page():
     # ---------------------------------------------------------------- extraction
     async def run_extraction():
         if not state["pdfs"]:
-            ui.notify("Add at least one PDF first", color="negative")
+            # Most often this means the page reloaded after losing its
+            # connection, taking the queue with it, rather than the user simply
+            # forgetting to add a file -- so say both.
+            ui.notify("No PDFs queued. If you added some and saw "
+                      "'Connection lost', the page reloaded and cleared them - "
+                      "add them again.", color="negative", timeout=8000,
+                      multi_line=True)
             return
         if not state["template"]:
             ui.notify("Choose or upload an output template", color="negative")
@@ -142,9 +148,16 @@ def main_page():
         progress.visible = False
         status.text = ""
 
+        # Read the finished workbook off the event loop. Doing it inside the
+        # render blocks the loop long enough on a small instance to trip the
+        # browser's reconnect, which reloads the page and clears the queue.
+        status.text = "Reading results"
+        sheet_data = await run.io_bound(sheets.read_workbook, str(excel_path))
+        status.text = ""
+
         output.clear()
         with output:
-            results_view.render(excel_path, results, state["kind"])
+            results_view.render(excel_path, results, state["kind"], sheet_data)
         for pdf in state["pdfs"]:
             pdf["path"].unlink(missing_ok=True)
         state["pdfs"] = []

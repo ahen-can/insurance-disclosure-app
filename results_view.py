@@ -18,8 +18,15 @@ VERDICT_COLOURS = {
 }
 
 
-def render(excel_path, results, kind="life"):
-    """Draw the results into the current container."""
+def render(excel_path, results, kind="life", sheet_data=None):
+    """Draw the results into the current container.
+
+    `sheet_data` is the output of sheets.read_workbook(). It is passed in rather
+    than read here so the caller can do the reading off the event loop: parsing
+    a twenty-sheet workbook with openpyxl blocks long enough on a small instance
+    to trip the websocket reconnect, which reloads the page and empties the
+    upload queue.
+    """
     failures = {k: v for k, v in results.items() if v["status"] == "error"}
     successes = [k for k, v in results.items() if v["status"] == "success"]
 
@@ -47,7 +54,9 @@ def render(excel_path, results, kind="life"):
     ui.label("Click Copy, then paste into your workbook. Values only, tab "
              "separated, in template column order.").classes("note")
 
-    for sheet_name, headers, rows in sheets.read_workbook(excel_path):
+    if sheet_data is None:
+        sheet_data = sheets.read_workbook(excel_path)
+    for sheet_name, headers, rows in sheet_data:
         with ui.card().classes("panel w-full p-3 gap-2"):
             with ui.row().classes("items-center justify-between w-full"):
                 ui.label(sheet_name).classes("sheet-name")

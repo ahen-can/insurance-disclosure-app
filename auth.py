@@ -91,4 +91,11 @@ def run_kwargs() -> dict:
         "port": int(os.environ.get("PORT", 8080)),
         "storage_secret": os.environ.get("STORAGE_SECRET", "local-dev-secret"),
         "show": False,
+        # NiceGUI defaults to 3 seconds, after which the browser gives up on the
+        # websocket and reloads the page. A reload re-runs the page function,
+        # which builds a fresh workspace and state -- so the queued PDFs vanish
+        # and "Run extraction" then does nothing but show a toast. Three seconds
+        # is far too tight on a free instance sharing a tenth of a CPU, where a
+        # single openpyxl load can stall the loop for longer than that.
+        "reconnect_timeout": float(os.environ.get("RECONNECT_TIMEOUT", 60)),
     }
