@@ -191,3 +191,22 @@ SHEET_CONFIG = {
         "others"
     ]
 }
+
+
+def _humanize(field: str) -> str:
+    """'total_commission_and_rewards' -> 'Total commission and rewards'.
+
+    Mechanical, not curated: underscores become spaces and only the first
+    letter is capitalised. A key that already reads as a phrase (L5's
+    "channelwise breakup", which has a stray space instead of an underscore in
+    the field name itself) passes through unchanged apart from that.
+    """
+    text = field.replace("_", " ").strip()
+    return text[:1].upper() + text[1:] if text else text
+
+
+# Human-readable column header for each field, for sheets that otherwise show
+# their raw JSON key as the header (the general template ships its own
+# headers; this is what the life template is missing).
+FIELD_LABELS = {form: [_humanize(field) for field in fields]
+                for form, fields in SHEET_CONFIG.items()}

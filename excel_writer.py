@@ -18,10 +18,18 @@ more of the work.
 import re
 
 import openpyxl
+from openpyxl.utils import get_column_letter
 
 import summary
-from config import SHEET_CONFIG
+from config import FIELD_LABELS, SHEET_CONFIG
 from config_general import HEADER_ROWS, SHEET_CONFIG_GENERAL, SHEET_TITLES
+
+# Indian digit grouping (lakh/crore), confirmed by rendering to PDF with
+# LibreOffice rather than assumed: 612345 -> "6,12,345", 999999999 ->
+# "99,99,99,999". Decimals are optional ("#.##") so a whole number shows with
+# none and a fractional one keeps up to two, rather than forcing ".00" onto
+# every whole-lakh figure or truncating real fractional values.
+LIFE_NUMBER_FORMAT = "#,##,##0.##;[Red](#,##,##0.##)"
 
 # Data key -> sheet name, for the life templates.
 LIFE_SHEETS = {
@@ -61,7 +69,15 @@ def get_or_add_fy_columns(ws, year: str, fields: list, data_start_col: int):
         )
 
     for i, field in enumerate(fields):
-        ws.cell(row=2, column=start_col + i).value = field
+        col = start_col + i
+        ws.cell(row=2, column=col).value = field
+        # Default column width (~8.4 characters) shows Indian-grouped figures
+        # as "###" rather than truncating them -- "12,34,567" alone is 9
+        # characters, before whatever the header itself needs.
+        letter = get_column_letter(col)
+        width = max(12, len(str(field)) + 2)
+        if ws.column_dimensions[letter].width in (None, 0):
+            ws.column_dimensions[letter].width = width
 
     return start_col
 
@@ -77,8 +93,12 @@ def get_or_create_company_row(ws, insurer_name: str, data_start_row: int = 3):
             return row
 
 
-def write_flat_sheet(wb, sheet_name: str, data: dict,
-                     insurer_name: str, year: str, fields: list):
+def write_flat_sheet(wb, sheet_name: str, data: dict, insurer_name: str,
+                     year: str, fields: list, labels: list = None):
+    """`fields` are the raw JSON keys data is looked up by; `labels` are what
+    gets written as the row-2 header. Kept separate because the two must stay
+    positionally aligned with each other but need not look alike.
+    """
     if sheet_name not in wb.sheetnames:
         return
 
@@ -87,12 +107,14 @@ def write_flat_sheet(wb, sheet_name: str, data: dict,
     if ws.cell(row=1, column=1).value is None:
         ws.cell(row=1, column=1).value = "Company"
 
-    start_col = get_or_add_fy_columns(ws, year, fields, data_start_col=2)
+    start_col = get_or_add_fy_columns(ws, year, labels or fields, data_start_col=2)
     company_row = get_or_create_company_row(ws, insurer_name, data_start_row=3)
 
     for i, field in enumerate(fields):
         col = start_col + i
-        ws.cell(row=company_row, column=col).value = data.get(field)
+        cell = ws.cell(row=company_row, column=col)
+        cell.value = data.get(field)
+        cell.number_format = LIFE_NUMBER_FORMAT
 
 
 # --------------------------------------------------------------- general path
@@ -161,8 +183,9 @@ def update_excel(results: dict, excel_path: str, kind: str = "life"):
             year = data.get("year", "FY23")
             for data_key, sheet_name in LIFE_SHEETS.items():
                 if data_key in data and data_key in SHEET_CONFIG:
-                    write_flat_sheet(wb, sheet_name, data[data_key],
-                                     insurer_name, year, SHEET_CONFIG[data_key])
+                    write_flat_sheet(wb, sheet_name, data[data_key], insurer_name,
+                                     year, SHEET_CONFIG[data_key],
+                                     FIELD_LABELS.get(data_key))
 
     summary.write_summary(wb, results, kind, expected_year)
     wb.save(excel_path)

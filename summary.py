@@ -47,10 +47,9 @@ def _field_map(kind):
     if kind == "general":
         from config_general import FIELD_LABELS, SHEET_CONFIG_GENERAL, SHEET_TITLES
         return SHEET_CONFIG_GENERAL, SHEET_TITLES, FIELD_LABELS
-    from config import SHEET_CONFIG
+    from config import FIELD_LABELS, SHEET_CONFIG
     titles = {code: code for code in SHEET_CONFIG}
-    labels = {code: list(fields) for code, fields in SHEET_CONFIG.items()}
-    return SHEET_CONFIG, titles, labels
+    return SHEET_CONFIG, titles, FIELD_LABELS
 
 
 def _confidence(data, form):

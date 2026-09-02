@@ -182,10 +182,21 @@ def test_life_path_still_works():
         wb = openpyxl.load_workbook(path)
         ws = wb["L2"]
         check("life year label", ws.cell(1, 2).value == "FY26")
-        check("life field header", ws.cell(2, 2).value == SHEET_CONFIG["L2"][0])
+        # Header is now the human-readable label, not the raw JSON key -- this
+        # is the change the user asked for, so it is what the test pins down.
+        check("life field header", ws.cell(2, 2).value == "Amounts transferred",
+              ws.cell(2, 2).value)
         check("life insurer", ws.cell(3, 1).value == "Alpha Life Insurance Limited")
         check("life first value", ws.cell(3, 2).value == 1)
+        check("life Indian grouping", ws.cell(3, 2).number_format == "#,##,##0.##;[Red](#,##,##0.##)",
+              ws.cell(3, 2).number_format)
         check("life summary written", summary.SHEET_NAME in wb.sheetnames)
+
+        rows, review = summary.collect(
+            {"Alpha Life Insurance Limited": {"status": "success", "data": data}},
+            "life")
+        l2_row = [r for r in rows if r[1] == "L2"]
+        check("life summary uses form code", bool(l2_row))
 
 
 for test in [test_column_alignment, test_check_fields_exist, test_general_write,
