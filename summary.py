@@ -169,6 +169,38 @@ def collect(results: dict, kind: str, expected_year=None) -> tuple:
     return form_rows, review_rows
 
 
+USAGE_HEADERS = ["Insurer", "Input tokens", "Output tokens", "Total tokens"]
+
+
+def collect_usage(results: dict) -> list:
+    """[[insurer, input, output, total], ..., [Total, ...]] for successful runs.
+
+    Shared by the on-screen panel and the workbook sheet so the two always show
+    the same figures -- the same reason `collect()` above exists. A PDF that
+    errored before Gemini replied has no usage to report and is left out
+    rather than shown as zero, which would read as a free extraction.
+    """
+    rows, total_in, total_out, total_all = [], 0, 0, 0
+    for insurer, result in results.items():
+        if result.get("status") != "success":
+            continue
+        usage = (result.get("data") or {}).get("usage")
+        if not usage:
+            continue
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        total_tokens = usage.get("total_tokens")
+        if total_tokens is None and input_tokens is not None and output_tokens is not None:
+            total_tokens = input_tokens + output_tokens
+        rows.append([insurer, input_tokens, output_tokens, total_tokens])
+        total_in += input_tokens or 0
+        total_out += output_tokens or 0
+        total_all += total_tokens or 0
+    if rows:
+        rows.append(["Total", total_in, total_out, total_all])
+    return rows
+
+
 def write_summary(wb, results: dict, kind: str, expected_year=None) -> None:
     """Create or replace the summary sheet, and move it to the front."""
     if SHEET_NAME in wb.sheetnames:
@@ -192,13 +224,37 @@ def write_summary(wb, results: dict, kind: str, expected_year=None) -> None:
                  REVIEW_HEADERS, review_rows or [["-", "-", "-", "-", "-", "-",
                                                   "Nothing flagged"]])
 
+    usage_rows = collect_usage(results)
+    if usage_rows:
+        row = _block(ws, row + 2, "Gemini token usage", USAGE_HEADERS, usage_rows,
+                     number_cols=(2, 3, 4), bold_last=True)
+
     for i, width in enumerate(WIDTHS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
+    # B-D also carry the usage table's token counts, which need more room than
+    # a form code or field count does.
+    for i in (2, 3, 4):
+        letter = get_column_letter(i)
+        if (ws.column_dimensions[letter].width or 0) < 16:
+            ws.column_dimensions[letter].width = 16
     ws.freeze_panes = "A7"
 
 
-def _block(ws, top, title, headers, rows, verdict_col=None):
-    """Write a titled header row plus its rows; returns the last row used."""
+def _block(ws, top, title, headers, rows, verdict_col=None, number_cols=(),
+          bold_last=False):
+    """Write a titled header row plus its rows; returns the last row used.
+
+    `number_cols` are 1-indexed columns to give a Western thousands-separator
+    format (used for token counts, which are a technical count rather than a
+    rupee figure, so plain grouping reads more naturally here than the Indian
+    grouping the data sheets use). The `[$-409]` tag is load-bearing, not
+    decoration: a bare "#,##0" rendered as Indian-grouped when this was
+    checked by rendering to PDF, because the renderer's own locale (this box
+    defaults to en_IN) supplies the group width for an unqualified comma.
+    Tagging the format as US-English fixes the width regardless of whatever
+    locale opens the file. `bold_last` marks the final row -- the running
+    total on the usage table.
+    """
     ws.cell(row=top, column=1, value=title).font = Font(bold=True, size=11,
                                                         color="FF17365D")
     header_row = top + 1
@@ -209,11 +265,16 @@ def _block(ws, top, title, headers, rows, verdict_col=None):
         cell.alignment = Alignment(wrap_text=True, vertical="center")
 
     for offset, values in enumerate(rows, start=1):
+        is_total_row = bold_last and offset == len(rows)
         for col, value in enumerate(values, start=1):
             cell = ws.cell(row=header_row + offset, column=col, value=value)
             cell.alignment = Alignment(vertical="top", wrap_text=(col == len(headers)))
             if col == 6 and isinstance(value, float):
                 cell.number_format = "0%"
+            if col in number_cols and isinstance(value, (int, float)):
+                cell.number_format = "[$-409]#,##0"
+            if is_total_row:
+                cell.font = Font(bold=True)
         if verdict_col:
             cell = ws.cell(row=header_row + offset, column=verdict_col)
             fill = VERDICT_FILLS.get(cell.value)

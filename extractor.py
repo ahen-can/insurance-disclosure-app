@@ -88,6 +88,7 @@ def extract_from_pdf(pdf_path, kind: str = "life") -> dict:
     try:
         uploaded = _wait_active(uploaded)
         response = _generate([uploaded, prompt])
+        usage = getattr(response, "usage_metadata", None)
     finally:
         # Uploaded files expire on their own after 48h; removing them keeps the
         # account's file list clean when many PDFs are processed in a batch.
@@ -104,4 +105,14 @@ def extract_from_pdf(pdf_path, kind: str = "life") -> dict:
             raw = raw[4:]
     raw = raw.strip()
     
-    return json.loads(raw)
+    data = json.loads(raw)
+    # Piggy-backed onto the same dict as "confidence" and "review", so it
+    # travels through app.py and excel_writer.py without either needing to
+    # know it exists -- both already pass the whole dict through untouched.
+    if usage is not None:
+        data["usage"] = {
+            "input_tokens": usage.prompt_token_count,
+            "output_tokens": usage.candidates_token_count,
+            "total_tokens": usage.total_token_count,
+        }
+    return data

@@ -199,9 +199,50 @@ def test_life_path_still_works():
         check("life summary uses form code", bool(l2_row))
 
 
+def test_collect_usage():
+    results = {
+        "Alpha": {"status": "success", "data": {
+            "usage": {"input_tokens": 10000, "output_tokens": 2000, "total_tokens": 12000}}},
+        "Beta": {"status": "success", "data": {
+            "usage": {"input_tokens": 5000, "output_tokens": 1000, "total_tokens": 6000}}},
+        "Gamma (no usage reported)": {"status": "success", "data": {}},
+        "Delta (failed)": {"status": "error", "error": "timeout"},
+    }
+    rows = summary.collect_usage(results)
+    check("usage rows: two reporting + one total", len(rows) == 3, rows)
+    check("Gamma excluded, not zeroed",
+          not any(r[0] == "Gamma (no usage reported)" for r in rows))
+    check("Delta excluded", not any(r[0] == "Delta (failed)" for r in rows))
+    total = rows[-1]
+    check("total row label", total[0] == "Total")
+    check("total input summed", total[1] == 15000, total[1])
+    check("total output summed", total[2] == 3000, total[2])
+    check("total tokens summed", total[3] == 18000, total[3])
+
+    check("no usage at all -> empty", summary.collect_usage(
+        {"X": {"status": "success", "data": {}}}) == [])
+
+
+def test_usage_reaches_the_workbook():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "usage.xlsx"
+        shutil.copyfile(GENERAL_TEMPLATE, path)
+        data = _general_payload(1.0)
+        data["usage"] = {"input_tokens": 43210, "output_tokens": 6789, "total_tokens": 49999}
+        update_excel({"Usage Co": {"status": "success", "data": data}}, str(path),
+                     kind="general")
+        wb = openpyxl.load_workbook(path)
+        ws = wb[summary.SHEET_NAME]
+        values = [c.value for row in ws.iter_rows() for c in row]
+        check("usage title on sheet", "Gemini token usage" in values)
+        check("input tokens on sheet", 43210 in values)
+        check("output tokens on sheet", 6789 in values)
+
+
 for test in [test_column_alignment, test_check_fields_exist, test_general_write,
              test_summary_flags_a_broken_total, test_year_mismatch_flagged,
-             test_life_path_still_works]:
+             test_life_path_still_works, test_collect_usage,
+             test_usage_reaches_the_workbook]:
     test()
 
 print(f"{passed} passed, {failed} failed")

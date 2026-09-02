@@ -40,6 +40,8 @@ def render(excel_path, results, kind="life", sheet_data=None):
     if successes:
         ui.label(f"Extracted: {', '.join(successes)}").classes("note")
 
+    _usage_panel(results)
+
     for name, failure in failures.items():
         with ui.card().classes("panel w-full p-3") \
                 .style(f"border-left:4px solid {theme.ORANGE}"):
@@ -69,6 +71,32 @@ def render(excel_path, results, kind="life", sheet_data=None):
                               on_click=lambda r=row, s=sheet_name: _copy(r, s)) \
                         .props("flat dense color=primary")
             ui.html(_table_html(headers, rows)).classes("scroll-x w-full")
+
+
+def _usage_panel(results):
+    """Gemini token counts for this run, in the same shape as the sheet's.
+
+    Shown up top as a running receipt of what the extraction cost, next to the
+    insurer list rather than buried below the correctness summary -- it does
+    not bear on whether the data is right, just on what it took to get it.
+    """
+    rows = summary.collect_usage(results)
+    if not rows:
+        return
+    *insurer_rows, total_row = rows
+    with ui.row().classes("items-center gap-4 w-full"):
+        ui.label(
+            f"Tokens used: {_fmt(total_row[1])} in / {_fmt(total_row[2])} out "
+            f"/ {_fmt(total_row[3])} total"
+        ).classes("muted")
+        if len(insurer_rows) > 1:
+            with ui.expansion("Per PDF").classes("w-full").props("dense"):
+                ui.html(_table_html(summary.USAGE_HEADERS, rows)) \
+                    .classes("scroll-x w-full")
+
+
+def _fmt(value):
+    return f"{value:,}" if isinstance(value, (int, float)) else "-"
 
 
 def _summary_panel(results, kind):
